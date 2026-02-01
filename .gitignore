@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Cache directories
+cache/
+.cache/
+
+# Output directories
+outputs/
+err/
+
+# Model checkpoints and large files
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# SLURM job files
+*.sub
+
+# Large model files (use Git LFS if needed)
+models--*/
