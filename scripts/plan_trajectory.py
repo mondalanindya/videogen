@@ -7,17 +7,93 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, List, Any
+import math
 import numpy as np
 from PIL import Image
 import torch
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor
-from qwen_vl_utils import process_vision_info
+from transformers import Qwen3VLMoeForConditionalGeneration, AutoProcessor
+
+# optional: add scipy.signal if available, otherwise fallback to EMA
+try:
+    from scipy.signal import savgol_filter
+    SCIPY_AVAILABLE = True
+except Exception:
+    SCIPY_AVAILABLE = False
+
+
+def extend_plan_with_decay(plan, hold_frames=12, decay_tau=0.45):
+    """
+    Extend the plan by adding hold_frames frames where the object decays to rest.
+    - plan: dict with key 'frames' = list of dicts (must have 'frame','x','y')
+    - hold_frames: number of extra frames to append (8..16 recommended)
+    - decay_tau: exponential decay factor (0.35..0.6)
+    """
+    frames = plan.get("frames", [])
+    if len(frames) == 0:
+        return plan
+    last = frames[-1]
+    if len(frames) >= 2:
+        p1 = frames[-2]
+        p2 = frames[-1]
+        vx = (p2["x"] - p1["x"])
+        vy = (p2["y"] - p1["y"])
+        vang = (p2.get("angle", 0) - p1.get("angle", 0))
+    else:
+        vx, vy, vang = 0.0, 0.0, 0.0
+
+    for i in range(1, hold_frames + 1):
+        factor = math.exp(-decay_tau * i)
+        new_frame = {
+            "frame": int(last["frame"] + i),
+            "x": float(last["x"] + vx * factor),
+            "y": float(last["y"] + vy * factor),
+            "radius": last.get("radius", 20),
+            "angle": float(last.get("angle", 0) + vang * factor),
+            "keyframe": False,
+            "confidence": float(last.get("confidence", 1.0))
+        }
+        frames.append(new_frame)
+
+    plan["frames"] = frames
+    plan["num_frames"] = frames[-1]["frame"] + 1
+    return plan
+
+
+def smooth_plan_positions(plan, window=5, poly=2):
+    """Smooth x,y,angle sequences in-place. If scipy is not available, do EMA smoothing."""
+    frames = plan.get("frames", [])
+    n = len(frames)
+    if n == 0:
+        return plan
+    xs = np.array([f["x"] for f in frames], dtype=float)
+    ys = np.array([f["y"] for f in frames], dtype=float)
+    angles = np.array([f.get("angle", 0.0) for f in frames], dtype=float)
+
+    if SCIPY_AVAILABLE and n >= window and window % 2 == 1:
+        xs_s = savgol_filter(xs, window, poly)
+        ys_s = savgol_filter(ys, window, poly)
+        angles_s = savgol_filter(angles, window, poly)
+    else:
+        # simple EMA fallback
+        alpha = 0.35
+        xs_s = np.copy(xs)
+        ys_s = np.copy(ys)
+        angles_s = np.copy(angles)
+        for i in range(1, n):
+            xs_s[i] = alpha * xs_s[i-1] + (1 - alpha) * xs[i]
+            ys_s[i] = alpha * ys_s[i-1] + (1 - alpha) * ys[i]
+            angles_s[i] = alpha * angles_s[i-1] + (1 - alpha) * angles[i]
+
+    for i, f in enumerate(frames):
+        f["x"], f["y"], f["angle"] = float(xs_s[i]), float(ys_s[i]), float(angles_s[i])
+    plan["frames"] = frames
+    return plan
 
 
 class TrajectoryPlanner:
     """Plans object trajectories using vision-language models."""
 
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-VL-72B-Instruct", device: str = "cuda"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-VL-30B-A3B-Instruct", device: str = "cuda"):
         """
         Initialize the trajectory planner.
         
@@ -32,21 +108,19 @@ class TrajectoryPlanner:
         self._load_model()
 
     def _load_model(self):
-        """Load the Qwen2.5-VL model and processor."""
+        """Load the Qwen3-VL model and processor."""
         print(f"Loading {self.model_name}...")
         try:
-            # Load model using correct class for Qwen2.5-VL
-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            # Load model using Qwen3VLMoeForConditionalGeneration
+            self.model = Qwen3VLMoeForConditionalGeneration.from_pretrained(
                 self.model_name,
-                torch_dtype="auto",
-                device_map="auto",
-                trust_remote_code=True
+                dtype="auto",
+                device_map="auto"
             )
             
             # Load processor
             self.processor = AutoProcessor.from_pretrained(
-                self.model_name,
-                trust_remote_code=True
+                self.model_name
             )
             
             print("✓ Model loaded successfully")
@@ -109,7 +183,7 @@ Example format:
 
         # Call VLM
         try:
-            # For Qwen2.5-VL, use the correct inference pattern
+            # For Qwen3-VL, use the new inference pattern
             messages = [
                 {
                     "role": "user",
@@ -126,17 +200,13 @@ Example format:
                 }
             ]
             
-            # Preparation for inference
-            text = self.processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            image_inputs, video_inputs = process_vision_info(messages)
-            inputs = self.processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",
+            # Preparation for inference with new API
+            inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt"
             )
             inputs = inputs.to(self.device)
             
@@ -160,6 +230,10 @@ Example format:
             trajectory_plan = self._generate_synthetic_trajectory(
                 num_frames, frame_w, frame_h, prompt
             )
+
+        # Smooth + extend plan so video doesn't snap to an abrupt stop
+        trajectory_plan = smooth_plan_positions(trajectory_plan, window=5, poly=2)
+        trajectory_plan = extend_plan_with_decay(trajectory_plan, hold_frames=12, decay_tau=0.45)
 
         # Save trajectory
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)

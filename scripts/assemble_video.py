@@ -5,12 +5,50 @@ Compiles individual frames into a final MP4 video using OpenCV.
 
 import os
 import glob
+import json
+import shutil
 from pathlib import Path
 from typing import List, Optional
 import cv2
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
+
+
+def collect_and_fill_frames(frames_dir: str, expected_num_frames: Optional[int] = None) -> List[str]:
+    """
+    Collect frames and fill missing ones by copying nearest previous frame.
+    
+    Args:
+        frames_dir: Directory containing frame images
+        expected_num_frames: Expected number of frames (from trajectory plan)
+    
+    Returns:
+        List of sorted frame paths
+    """
+    files = sorted(glob.glob(os.path.join(frames_dir, "frame_*.png")))
+    indices_present = {int(os.path.basename(f).split('_')[1].split('.')[0]) for f in files}
+    
+    if expected_num_frames is not None:
+        missing = [i for i in range(expected_num_frames) if i not in indices_present]
+        if missing:
+            print(f"[WARN] Missing frames: {missing[:50]} (showing up to 50). Filling with nearest previous frames.")
+            for mi in missing:
+                prev_candidates = [i for i in range(mi-1, -1, -1) if i in indices_present]
+                if prev_candidates:
+                    prev_idx = prev_candidates[0]
+                else:
+                    # fallback to first available frame
+                    prev_idx = min(indices_present) if indices_present else None
+                if prev_idx is None:
+                    raise RuntimeError("No frames available to fill missing frames.")
+                src = os.path.join(frames_dir, f"frame_{prev_idx:04d}.png")
+                dst = os.path.join(frames_dir, f"frame_{mi:04d}.png")
+                shutil.copy(src, dst)
+                indices_present.add(mi)
+            # refresh files list
+            files = sorted(glob.glob(os.path.join(frames_dir, "frame_*.png")))
+    return files
 
 
 class VideoAssembler:
@@ -34,7 +72,8 @@ class VideoAssembler:
         frame_pattern: str = "frame_*.png",
         width: Optional[int] = None,
         height: Optional[int] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        trajectory_plan_path: Optional[str] = None
     ) -> str:
         """
         Assemble video from frames.
@@ -46,12 +85,20 @@ class VideoAssembler:
             width: Output video width (auto-detect if None)
             height: Output video height (auto-detect if None)
             verbose: Whether to print progress
+            trajectory_plan_path: Path to trajectory plan JSON (for expected frame count)
             
         Returns:
             Path to output video
         """
-        # Find all frame files
-        frame_paths = sorted(glob.glob(os.path.join(frame_dir, frame_pattern)))
+        # Load expected frame count from trajectory plan if available
+        expected_num_frames = None
+        if trajectory_plan_path and os.path.exists(trajectory_plan_path):
+            with open(trajectory_plan_path, 'r') as f:
+                plan = json.load(f)
+                expected_num_frames = plan.get("num_frames", len(plan.get("frames", [])))
+        
+        # Collect frames and fill missing ones
+        frame_paths = collect_and_fill_frames(frame_dir, expected_num_frames)
         
         if not frame_paths:
             raise FileNotFoundError(f"No frames found matching {frame_pattern} in {frame_dir}")
@@ -186,6 +233,7 @@ def main():
     parser.add_argument("--width", type=int, help="Output video width")
     parser.add_argument("--height", type=int, help="Output video height")
     parser.add_argument("--preview", action="store_true", help="Create preview collage")
+    parser.add_argument("--trajectory-plan", type=str, help="Path to trajectory plan JSON")
     
     args = parser.parse_args()
     
@@ -196,7 +244,8 @@ def main():
         frame_dir=args.frames_dir,
         output_path=args.output,
         width=args.width,
-        height=args.height
+        height=args.height,
+        trajectory_plan_path=args.trajectory_plan
     )
     
     # Create preview if requested

@@ -132,8 +132,8 @@ class CompositeFrameGenerator:
             
             # Paste ball sprite centered at (x, y)
             ball_w, ball_h = ball_sprite.size
-            paste_x = x - ball_w // 2
-            paste_y = y - ball_h // 2
+            paste_x = int(x - ball_w // 2)
+            paste_y = int(y - ball_h // 2)
             
             frame.paste(ball_sprite, (paste_x, paste_y), ball_sprite)
             

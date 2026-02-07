@@ -9,29 +9,38 @@
 # Vision and Image Processing
 torch>=2.0.0
 torchvision>=0.15.0
-opencv-python>=4.8.0
+opencv-python>=4.7.0
 pillow>=10.0.0
 imageio>=2.33.0
 imageio-ffmpeg>=0.4.9
 
 # Hugging Face Transformers and Diffusers
-transformers>=4.30.0,<4.35.0
-diffusers>=0.21.0,<0.25.0
-accelerate>=0.20.0,<0.22.0
-safetensors>=0.3.1
+transformers>=4.49.0
+diffusers>=0.36.0
+accelerate>=0.26.0
+safetensors>=0.4.3
 
 # Vision Models
 timm>=0.9.0
 numpy>=1.24.0
 
-# Qwen VL utilities
-qwen-vl-utils>=0.0.8
+# Qwen VL (no longer needed - built into transformers)
+# qwen-vl-utils>=0.0.8
 
-
+# Scientific computing (for trajectory smoothing)
+scipy>=1.10.0
 
 # Utilities
 tqdm>=4.66.0
 pyyaml>=6.0
+
+# IP-Adapter and SAM (for cross-frame consistency)
+git+https://github.com/facebookresearch/segment-anything.git
+git+https://github.com/tencent-ailab/IP-Adapter.git
+# Set SAM_CHECKPOINT environment variable or place in models/
+#
+# Usage with IP-Adapter enabled:
+# python scripts/generate_ip_keyframes.py --use-ip-adapter --ip-adapter-model models/ip-adapter_sd15.bin
 
 # Development (optional)
 # pytest>=7.4.0
